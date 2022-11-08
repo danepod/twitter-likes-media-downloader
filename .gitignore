@@ -1,3 +1,6 @@
 */
 *.json
 *.ini
+*.txt
+!requirements.txt
+tweets.db
