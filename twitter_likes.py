@@ -4,18 +4,17 @@ import os
 import json
 from likes import Likes
 import sys
-import time
 
 
 class Downloader:
     def __init__(self):
         self._current_path = os.path.dirname(os.path.realpath(__file__))
 
-    def downloadLikes(self, api, screen_name, force_redownload):
+    def downloadLikes(self, api, screen_name, force_redownload, id_dump):
         liked_tweets = Likes(
-            api, screen_name, self._current_path, force_redownload)
+            api, screen_name, self._current_path, force_redownload, id_dump)
         liked_tweets.createTable()
-        liked_tweets.download()
+        liked_tweets.download_from_dump()
 
     def generateConfig(self):
         base = {
@@ -38,14 +37,8 @@ class Downloader:
             "-u", "--user", help="Twitter username, @twitter would just be twitter"
         )
         parser.add_argument(
-            "--images",
-            help="Download only images, downloads videos and images by default",
-            action="store_true",
-        )
-        parser.add_argument(
-            "--videos",
-            help="Download only videos, downloads videos and images by default",
-            action="store_true",
+            "--id-dump",
+            help="Use a list of tweet ids to download",
         )
         parser.add_argument(
             "-g",
@@ -56,14 +49,10 @@ class Downloader:
         parser.add_argument(
             "-c",
             "--config",
-            help="JSON file containing API keys. Default(config.json) is used if not specified",
+            help="JSON file containing API keys. Default (config.json) is used if not specified",
         )
         parser.add_argument(
             "-f", "--force", help="Redownloads all media", action="store_true"
-        )
-
-        parser.add_argument(
-            "-l", "--loop", help="Run forever", action="store_true"
         )
 
         args = parser.parse_args()
@@ -93,14 +82,7 @@ class Downloader:
             raise
         except json.decoder.JSONDecodeError:
             raise
-        print(args.loop)
-        while True:
-            self.downloadLikes(api, args.user, args.force)
-            if not args.loop:
-                break
-            print(
-                f"[{time.strftime('%m/%d/%Y %H:%M:%S', time.localtime())}] Running again in 30 minutes")
-            time.sleep(30*60)
+        self.downloadLikes(api, args.user, args.force, args.id_dump)
 
 
 downloader = Downloader()

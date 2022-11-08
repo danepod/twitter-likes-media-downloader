@@ -1,27 +1,25 @@
 import os
-import sys
 import errno
 import json
 import requests
 import time
 import re
-import gzip
 import sqlite3
+import pandas
 
 
 class Likes:
-    def __init__(self, api, screen_name, current_path, force_redownload):
+    def __init__(self, api, screen_name, current_path, force_redownload, id_dump):
         self._api = api
         self._screen_name = screen_name
         self._current_path = current_path
         self._force_redownload = force_redownload
+        self._id_dump = id_dump
         self._archives_path = os.path.join(current_path, "archives")
         self._downloads_path = os.path.join(
             current_path, "downloads", screen_name)
         self.__conn = sqlite3.connect(os.path.join(
             os.path.dirname(os.path.realpath(__file__)), "tweets.db"))
-        # self.__conn = sqlite3.connect(os.path.join(os.path.normpath(
-        #     "C:\\Users\\gd\\Documents\\Projects\\Python\\TwitterListsScript"), "example.db"))
         self.__cursor = self.__conn.cursor()
 
     def loadArchive(self):
@@ -32,8 +30,8 @@ class Likes:
                 Gives the user the option to reset the archive and download all media again
             Checks if the file exists, if it doesn't then it loads an empty dict
         """
-        import pandas as pd
-        tweets = pd.read_sql_query(
+
+        tweets = pandas.read_sql_query(
             """select tweet_id as tweet_id from likes;""", self.__conn)
         tweet_ids = set([row['tweet_id']
                         for index, row in tweets.iterrows()])
@@ -47,35 +45,6 @@ class Likes:
         except sqlite3.OperationalError:
             pass
 
-    def getFavorites(self, max_id):
-        return self._api.GetFavorites(
-            screen_name=self._screen_name,
-            count=200,
-            max_id=max_id,
-            include_entities=False,
-            return_json=True,
-        )
-
-    def getAllFavorites(self):
-        """
-            Retrieves all liked tweets on an account 200 at a time 
-            (75 requests/15min = 15000 liked tweets/15min max)
-        """
-        timeline = []
-        tweet_count = 2
-        total = 0
-        max_id = 0
-        while tweet_count > 1:
-            new_timeline = self.getFavorites(max_id)
-            tweet_count = len(new_timeline)
-            if tweet_count > 1:
-                total += tweet_count
-                max_id = new_timeline[tweet_count - 1]["id"]
-                new_timeline.reverse()
-                timeline = new_timeline + timeline
-        print("found " + str(total) + " liked tweets")
-        return timeline
-
     def getTweetData(self, tweet):
         """
             Stores some metadata about the tweet that can be used later, maybe to create some sort of gui to view tweets
@@ -88,8 +57,9 @@ class Likes:
             "tweet": tweet["full_text"],
             "media": [],
         }
-        if "extended_entities" in tweet and "media" in tweet["extended_entities"]:
-            for media in tweet["extended_entities"]["media"]:
+
+        if "media" in tweet:
+            for media in tweet["media"]:
                 media_type = media["type"]
                 if media_type == "video" or media_type == "animated_gif":
                     sorted_variants = sorted(  # sort by bitrate, 0 index will typically be m3u8, 1 is the highest bitrate
@@ -105,7 +75,7 @@ class Likes:
                         index += 1
                     info["media"].append(
                         {
-                            "id_str": media["id_str"],
+                            "id_str": str(media["id"]),
                             "url": sorted_variants[index]["url"],
                             "type": media_type,
                         }
@@ -113,7 +83,7 @@ class Likes:
                 elif media_type == "photo":
                     info["media"].append(
                         {
-                            "id_str": media["id_str"],
+                            "id_str": str(media["id"]),
                             "url": media["media_url_https"] + ":large",
                             "type": media_type,
                         }
@@ -127,7 +97,7 @@ class Likes:
         """
         r = requests.get(url, stream=True)
         if r.status_code != 200:
-            print(str(r.status_code) + " error downloading tweet with id: " + id)
+            print(f"\r{r.status_code} error downloading tweet with id: {id}")
         else:
             try:
                 os.makedirs(os.path.join("downloads", self._screen_name))
@@ -136,7 +106,7 @@ class Likes:
                     raise
                 pass
             file_path = os.path.join(self._downloads_path, filename)
-            if os.path.exists(file_path) == False:
+            if os.path.exists(file_path) == False or self._force_redownload:
                 while True:
                     try:
                         with open(file_path, "wb") as f:
@@ -145,17 +115,14 @@ class Likes:
                                     f.write(chunk)
                         break
                     except OSError:
-                        filename = (
-                            filename.split("-")[-2].strip()
-                            + "."
-                            + filename.split(".")[-1]
-                        )
+                        filename = (filename.split(
+                            "-")[-2].strip() + "." + filename.split(".")[-1])
                         file_path = os.path.join(
                             self._downloads_path, filename)
 
             else:
-                print("tweet with id " + id +
-                      " already exists, skipping download")
+                print(
+                    f"\rTweet with id {id} already exists, skipping download")
         return filename
 
     def writeTimeline(self, timeline):
@@ -232,25 +199,6 @@ class Likes:
         self.writeFavorites(favorites)
         self.addToDb(favorites)
 
-    def reset(self):
-        with open(
-            os.path.join(self._archives_path, self._screen_name + ".json"),
-            "w",
-            encoding="utf-8",
-        ) as f:
-            json.dump(dict(), f, ensure_ascii=False, indent=4)
-        while True:
-            try:
-                with open(
-                    os.path.join(self._downloads_path, "favorites.json"),
-                    "w",
-                    encoding="utf-8",
-                ) as f:
-                    json.dump([], f, ensure_ascii=False, indent=4)
-                break
-            except FileNotFoundError:
-                os.makedirs(self._downloads_path)
-
     def getFilename(self, date, tweet, idx, id, media_type):
         tweet_id = tweet["id_str"]
         ext = ".mp4"
@@ -282,41 +230,72 @@ class Likes:
 
         return tweet_id
 
-    def download(self):
-        if self._force_redownload:
-            self.reset()
-        archive = self.loadArchive()
-        timeline = self.getAllFavorites()
-        new_tweets = []
-        favorites = []
-        for idx, tweet in enumerate(timeline):
-            id = tweet["id_str"]
-            if id in archive:
-                continue
-            else:
-                archive.add(id)
-                new_tweets.append(tweet)
-                favorites.append(self.getTweetData(tweet))
+    def download_from_dump(self):
+        print("Downloading liked media from Twitter data export")
 
-        print(str(len(favorites)) + " new favorites with images/videos")
+        try:
+            with open(os.path.join(self._current_path, self._id_dump), "r", encoding="utf-8") as infile:
+                archive = self.loadArchive()
+                new_tweets = []
+                favorites = []
+                timeline = []
 
-        for tweet in favorites:
-            tweet_id = tweet["id_str"]
-            date = (
-                "["
-                + time.strftime(
-                    "%Y-%m-%d",
-                    time.strptime(tweet["created_at"],
-                                  "%a %b %d %H:%M:%S +0000 %Y"),
-                )
-                + "]"
-            )
-            for idx, media in enumerate(tweet["media"]):
-                filename = self.getFilename(
-                    date, tweet, idx, False, media["type"])
+                id_count = 0
+                rejected_count = 0
 
-                actual_filename = self.downloadMedia(
-                    tweet_id, filename, media["url"],)
-                media["filename"] = actual_filename
-        self.writeTweetData(new_tweets, favorites)
-        print("done")
+                print("Fetching tweets")
+
+                # We can request 100 tweets at a time in getTweetData, and do 300 requests per 15 minutes
+                lines = []  # Temporary variable for collecting n lines before flushing into GetStatuses
+                for line in infile:
+                    id_count += 1
+                    line = line.strip()
+                    if line in archive and not self._force_redownload:
+                        # print(f"tweet with id {line} already in archive, skipping")
+                        rejected_count += 1
+                        continue
+                    else:
+                        archive.add(line)
+                        lines.append(int(line))
+                        if len(lines) >= 100:
+                            timeline.extend(self._api.GetStatuses(
+                                lines, include_entities=False, map=False))
+                            lines = []
+                if len(lines) > 0:
+                    timeline.extend(self._api.GetStatuses(
+                        lines, include_entities=False, map=False))
+
+                print("Converting tweets for further use")
+
+                for idx, tweet in enumerate(timeline):
+                    tweet_dict = tweet.AsDict()
+                    new_tweets.append(tweet_dict)
+                    favorites.append(self.getTweetData(tweet_dict))
+
+                print("Completed fetching and processing of tweets")
+                print(
+                    f"Found {id_count} Tweet IDs, {rejected_count} were skipped")
+                print(
+                    f"Media of {len(favorites)} tweets will be downloaded now")
+                print(
+                    f"{id_count - len(favorites) - rejected_count} tweets couldn't be downloaded, they were probably deleted")
+
+                for i, tweet in enumerate(favorites):
+                    print(
+                        f"\rDownloading Tweet media {i+1}/{len(favorites)}", end="")
+                    tweet_id = tweet["id_str"]
+                    date = ("[" + time.strftime("%Y-%m-%d", time.strptime(
+                        tweet["created_at"], "%a %b %d %H:%M:%S +0000 %Y"), ) + "]")
+                    for idx, media in enumerate(tweet["media"]):
+                        filename = self.getFilename(
+                            date, tweet, idx, False, media["type"])
+
+                        actual_filename = self.downloadMedia(
+                            tweet_id, filename, media["url"],)
+                        media["filename"] = actual_filename
+
+                self.writeTweetData(new_tweets, favorites)
+                print("\nDone")
+
+        except FileNotFoundError:
+            print("Tweet ID dump file not found")
