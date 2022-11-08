@@ -14,7 +14,7 @@ every liked tweet.
   accept your request
 
 - Replace the first line in `data/like.js` with `[` and filter out the tweet ids with `jq -r .[].like.tweetId like.js > like.txt`
-- Install dependencies `pip install python-twitter pandas`
+- Install dependencies `pip install -r requirements.txt`
 - Generate base config file with `python twitter_likes.py -g`
 - Fill in config file `config.json` with API keys
 - Run with `python twitter_likes.py -u "twitter username" --id-dump likes.txt`
